@@ -31,6 +31,7 @@ class RuntimePolicy:
     auto_merge: bool = False
     branch_prefix: str = "auto"
     base_branch: str = "main"
+    local_only: bool = False
 
 
 def configure_logging() -> None:
@@ -113,7 +114,6 @@ def run_request(
             store.save_run(run)
             return run
 
-        git.push_branch(run.branch_name)
         pr_body = git.render_pr_body(
             Path("templates/pull_request.md"),
             {
@@ -125,6 +125,14 @@ def run_request(
             },
         )
         store.write_artifact(run.id, "pull_request.md", pr_body)
+        if policy.local_only:
+            run.outputs["local_only"] = True
+            run.outputs["local_note"] = "Push and PR skipped by runtime policy"
+            run.status = RunStatus.COMPLETED
+            store.save_run(run)
+            return run
+
+        git.push_branch(run.branch_name)
 
         pr_url = maybe_create_github_pr(run, request, pr_body, policy)
         if pr_url:
@@ -207,6 +215,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--branch-prefix", default="auto", help="Branch prefix")
     parser.add_argument("--base-branch", default="main", help="Base branch for branches and PR")
     parser.add_argument("--dry-run", action="store_true", help="Skip commit/push/PR")
+    parser.add_argument("--local-only", action="store_true", help="Run full local cycle without push/PR")
     return parser.parse_args()
 
 
@@ -223,6 +232,7 @@ def main() -> None:
         max_cycles=args.max_cycles,
         branch_prefix=args.branch_prefix,
         base_branch=args.base_branch,
+        local_only=args.local_only,
     )
     if args.command == "run":
         trigger = ManualTrigger(repo_path=args.repo_path, repo_slug=args.repo_slug)
