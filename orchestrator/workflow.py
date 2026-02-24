@@ -121,6 +121,7 @@ class Orchestrator:
             "task_id": task.id,
             "task_title": task.title,
             "input_text": run.input_text,
+            "repo_path": run.repo_path,
             "acceptance_criteria": task.acceptance_criteria,
             "outputs": run.outputs,
         }
