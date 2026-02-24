@@ -12,3 +12,6 @@ data/
 frontend/dist/
 frontend/node_modules/
 node_modules/
+artifacts/
+state/runs/
+state/hardening-metrics.json

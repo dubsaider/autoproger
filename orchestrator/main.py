@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -93,7 +93,7 @@ def run_request(
         store.write_artifact(
             run.id,
             "quality-gates.json",
-            [gate.__dict__ for gate in gate_results],
+            [asdict(gate) for gate in gate_results],
         )
 
         if failed_gates:
