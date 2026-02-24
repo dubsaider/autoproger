@@ -1,0 +1,13 @@
+services:
+  autoproger:
+    build: .
+    ports:
+      - "8888:8000"
+    env_file:
+      - .env
+    volumes:
+      - autoproger_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  autoproger_data:
