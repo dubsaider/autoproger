@@ -2,12 +2,25 @@ services:
   autoproger:
     build: .
     ports:
-      - "8888:8000"
+      - "8000:8000"
     env_file:
       - .env
     volumes:
       - autoproger_data:/app/data
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: autoproger
+      POSTGRES_USER: autoproger
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-autoproger}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
 volumes:
   autoproger_data:
+  pg_data:

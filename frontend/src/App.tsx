@@ -1,17 +1,16 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
-import { useAuth } from './useAuth'
-import Login from './pages/Login'
-import Dashboard from './pages/Dashboard'
-import Issues from './pages/Issues'
-import IssueWriter from './pages/IssueWriter'
-import Problems from './pages/Problems'
-import Layout from './Layout'
+import { Routes, Route, Navigate } from "react-router-dom";
+import { isAuthenticated } from "./api/client";
+import Layout from "./components/Layout";
+import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
+import Repos from "./pages/Repos";
+import Tasks from "./pages/Tasks";
+import RunDetail from "./pages/RunDetail";
+import Settings from "./pages/Settings";
 
-function Protected({ children }: { children: React.ReactNode }) {
-  const { token, loading } = useAuth()
-  if (loading) return <div className="flex min-h-screen items-center justify-center">Загрузка...</div>
-  if (!token) return <Navigate to="/login" replace />
-  return <>{children}</>
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  if (!isAuthenticated()) return <Navigate to="/login" replace />;
+  return <>{children}</>;
 }
 
 export default function App() {
@@ -19,19 +18,21 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route
-        path="/"
+        path="/*"
         element={
-          <Protected>
-            <Layout />
-          </Protected>
+          <ProtectedRoute>
+            <Layout>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/repos" element={<Repos />} />
+                <Route path="/tasks" element={<Tasks />} />
+                <Route path="/runs/:runId" element={<RunDetail />} />
+                <Route path="/settings" element={<Settings />} />
+              </Routes>
+            </Layout>
+          </ProtectedRoute>
         }
-      >
-        <Route index element={<Dashboard />} />
-        <Route path="issues" element={<Issues />} />
-        <Route path="issues/new" element={<IssueWriter />} />
-        <Route path="problems" element={<Problems />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      />
     </Routes>
-  )
+  );
 }

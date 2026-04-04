@@ -1,72 +1,104 @@
-"""Minimal GitHub API client for PR and event payload handling."""
+"""GitHub platform client using PyGithub."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import json
-from typing import Any
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+import asyncio
+import logging
+from functools import partial
+from typing import Sequence
+
+from github import Github
+from github.Repository import Repository as GHRepo
+
+from integrations.base import GitPlatformClient, IssueData, PRData
+
+log = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
-class GitHubConfig:
-    token: str
-    owner: str
-    repo: str
-    api_url: str = "https://api.github.com"
+class GitHubClient(GitPlatformClient):
+    def __init__(self, token: str, repo_url: str) -> None:
+        self._gh = Github(token)
+        self._repo_slug = self._extract_slug(repo_url)
+        self._repo: GHRepo | None = None
 
+    @staticmethod
+    def _extract_slug(url: str) -> str:
+        url = url.rstrip("/")
+        if url.endswith(".git"):
+            url = url[:-4]
+        parts = url.replace("https://github.com/", "").replace("http://github.com/", "")
+        return parts
 
-class GitHubClient:
-    def __init__(self, config: GitHubConfig) -> None:
-        self.config = config
+    def _get_repo(self) -> GHRepo:
+        if self._repo is None:
+            self._repo = self._gh.get_repo(self._repo_slug)
+        return self._repo
 
-    def create_pull_request(
-        self,
-        *,
-        title: str,
-        body: str,
-        head: str,
-        base: str = "main",
-        draft: bool = True,
-    ) -> str:
-        url = f"{self.config.api_url}/repos/{self.config.owner}/{self.config.repo}/pulls"
-        payload = {
-            "title": title,
-            "body": body,
-            "head": head,
-            "base": base,
-            "draft": draft,
-        }
-        response = self._request("POST", url, json=payload)
-        return str(response.get("html_url", ""))
+    async def _run(self, fn, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
 
-    def parse_event(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Normalizes GitHub webhook payload into run request metadata."""
-        repo = payload.get("repository", {})
-        issue = payload.get("issue", {})
-        comment = payload.get("comment", {})
-        return {
-            "source": "github_event",
-            "event_type": event_type,
-            "repo_slug": repo.get("full_name", ""),
-            "issue_id": str(issue.get("number", "")),
-            "text": comment.get("body") or issue.get("title") or "",
-            "metadata": payload,
-        }
+    async def list_issues(
+        self, *, labels: list[str] | None = None, state: str = "open"
+    ) -> Sequence[IssueData]:
+        repo = self._get_repo()
 
-    def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self.config.token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        payload = kwargs.get("json")
-        data = json.dumps(payload).encode("utf-8") if payload is not None else None
-        request = Request(url=url, data=data, headers=headers, method=method)
-        try:
-            with urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"GitHub API error {exc.code}: {body}") from exc
+        def _fetch():
+            kw: dict = {"state": state}
+            if labels:
+                kw["labels"] = [repo.get_label(l) for l in labels]
+            return list(repo.get_issues(**kw))
+
+        raw = await self._run(_fetch)
+        return [
+            IssueData(
+                number=i.number,
+                title=i.title,
+                body=i.body or "",
+                labels=[l.name for l in i.labels],
+                state=i.state,
+                url=i.html_url,
+            )
+            for i in raw
+            if i.pull_request is None  # exclude PRs from issues list
+        ]
+
+    async def get_issue(self, number: int) -> IssueData:
+        repo = self._get_repo()
+        i = await self._run(repo.get_issue, number)
+        return IssueData(
+            number=i.number,
+            title=i.title,
+            body=i.body or "",
+            labels=[l.name for l in i.labels],
+            state=i.state,
+            url=i.html_url,
+        )
+
+    async def comment_on_issue(self, number: int, body: str) -> None:
+        repo = self._get_repo()
+        issue = await self._run(repo.get_issue, number)
+        await self._run(issue.create_comment, body)
+
+    async def create_pull_request(
+        self, *, title: str, body: str, head: str, base: str
+    ) -> PRData:
+        repo = self._get_repo()
+
+        def _create():
+            return repo.create_pull(title=title, body=body, head=head, base=base)
+
+        pr = await self._run(_create)
+        return PRData(
+            number=pr.number,
+            title=pr.title,
+            body=pr.body or "",
+            url=pr.html_url,
+            state=pr.state,
+            branch=head,
+        )
+
+    async def close_issue(self, number: int) -> None:
+        repo = self._get_repo()
+        issue = await self._run(repo.get_issue, number)
+        await self._run(issue.edit, state="closed")

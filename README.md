@@ -1,60 +1,85 @@
-# Autoproger (новый GitOps-подход)
+# Autoproger v2
 
-Проект переведен на новый мультиагентный контур без обратной совместимости со старым CLI.
+Multi-agent system for automated software development and maintenance. Watches issues in GitHub/GitLab repositories, processes them through an AI agent pipeline, and creates Pull Requests.
 
-Текущий поток:
+## Architecture
 
-`input -> intake -> router -> analyst -> developer -> tester -> devops -> qa -> quality gates -> branch/push -> PR`
-
-## Ключевые модули
-
-- `orchestrator/main.py` — единый CLI entrypoint
-- `orchestrator/router.py` — классификация и маршрутизация задач
-- `orchestrator/workflow.py` — цикл выполнения, ретраи, эскалация
-- `agents/*` — ролевые агенты
-- `workflows/quality_gates.py` — lint/test/build/smoke gate runner
-- `integrations/git_client.py` — branch-per-run, commit, push
-- `integrations/github_client.py` — создание PR через GitHub API
-- `state/*` — модели run/task/gates + JSON store
-- `templates/pull_request.md` — шаблон PR
-
-## Запуск
-
-`main.py` теперь делегирует только в новый оркестратор.
-
-### 1) Ручной запуск
-
-```bash
-python main.py run --text "Добавить health-check endpoint и smoke-тест" --repo-path "C:\path\to\target-repo" --repo-slug owner/repo
+```
+Issue Watcher → Task Manager → Orchestrator
+                                  ├── Planner Agent
+                                  ├── Developer Agent
+                                  ├── Reviewer Agent (loop)
+                                  └── Tester Agent
+                                          ↓
+                               Quality Gates → PR/MR
 ```
 
-### 2) Запуск от GitHub события
+**LLM Abstraction Layer** — pluggable providers:
+- Anthropic API (Claude)
+- Claude Code CLI
+- OpenRouter (access to many models)
+
+**Interfaces:**
+- Web Dashboard (React + Tailwind)
+- Telegram Bot
+- REST API + Webhooks
+
+## Quick Start
 
 ```bash
-python main.py github-event --event-type issues --payload-file payload.json --repo-path "C:\path\to\target-repo"
+# 1. Clone and configure
+cp .env.example .env
+# Edit .env with your tokens
+
+# 2. Run with Docker
+docker compose up --build
+
+# 3. Or run locally
+pip install -e .
+python main.py
 ```
 
-### 3) Отчет по стабильности/метрикам
+Open http://localhost:8000 — login with credentials from `.env`.
 
-```bash
-python main.py hardening-report --state-dir state
+## Configuration
+
+| Variable | Description |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key (fallback) |
+| `LLM_DEFAULT_PROVIDER` | `anthropic`, `claude_code`, or `openrouter` |
+| `LLM_DEFAULT_MODEL` | Model name (e.g. `claude-sonnet-4-20250514`) |
+| `DATABASE_URL` | Database URL (SQLite or PostgreSQL) |
+| `SECRET_KEY` | JWT secret |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Dashboard credentials |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `TELEGRAM_ADMIN_CHAT_ID` | Chat ID for notifications |
+| `GITHUB_TOKEN` | GitHub personal access token |
+| `GITLAB_TOKEN` | GitLab access token |
+
+## How It Works
+
+1. **Issue Watcher** polls configured repos for issues with target labels (e.g. `autoproger`)
+2. **Task Manager** creates a task; in `semi_auto` mode waits for approval
+3. **Orchestrator** runs the agent pipeline:
+   - **Planner** analyzes the issue and codebase, creates an implementation plan
+   - **Developer** generates code changes
+   - **Reviewer** reviews for bugs/security issues (up to 2 rounds)
+   - **Tester** generates tests
+4. **Quality Gates** run lint/test checks
+5. System creates a branch, commits, pushes, and opens a PR
+
+## Project Structure
+
 ```
-
-## Полезные флаги
-
-- `--dry-run` — без commit/push/PR
-- `--max-retries` — лимит ретраев по задаче
-- `--max-cycles` — лимит циклов оркестрации
-- `--branch-prefix` — префикс рабочих веток (по умолчанию `auto`)
-- `--base-branch` — базовая ветка (по умолчанию `main`)
-
-## Артефакты
-
-- `state/runs/<run_id>.json` — состояние запуска
-- `artifacts/<run_id>/` — intake, результаты агентов, quality gates, fail-safe, PR body
-
-## Важно
-
-- Изменения в `main/master` напрямую запрещены политикой `GitClient`.
-- PR создается только после прохождения quality gates.
-- При фейле срабатывает fail-safe с отчетом в артефакты.
+core/           — orchestrator, task manager, config, domain models
+agents/         — AI agents (planner, developer, reviewer, tester)
+llm/            — LLM abstraction layer and providers
+integrations/   — GitHub/GitLab clients, repo manager, issue watcher
+context/        — codebase indexer and context builder
+quality/        — quality gate runner
+storage/        — database models and CRUD
+api/            — FastAPI REST API
+bot/            — Telegram bot
+frontend/       — React dashboard
+```

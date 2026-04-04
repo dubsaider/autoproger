@@ -1,72 +1,72 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { login } from '../api'
-import { useAuth } from '../useAuth'
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { api, setToken } from "../api/client";
 
 export default function Login() {
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const navigate = useNavigate()
-  const { setToken } = useAuth()
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const nav = useNavigate();
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
     try {
-      const { access_token } = await login(username, password)
-      setToken(access_token)
-      navigate('/', { replace: true })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ошибка входа')
+      const res = await api.login(username, password);
+      setToken(res.access_token);
+      nav("/");
+    } catch {
+      setError("Invalid credentials");
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-950 px-4">
-      <div className="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900/80 p-8 shadow-xl">
-        <h1 className="text-xl font-semibold text-zinc-100 mb-1">Autoproger</h1>
-        <p className="text-zinc-500 text-sm mb-6">Вход в админ-панель</p>
-        <form onSubmit={submit} className="space-y-4">
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1">Логин</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 placeholder-zinc-500 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
-              placeholder="admin"
-              required
-            />
+    <div className="min-h-screen flex items-center justify-center bg-gray-950">
+      <form
+        onSubmit={handleSubmit}
+        className="w-full max-w-sm bg-gray-900 rounded-2xl p-8 border border-gray-800 shadow-xl"
+      >
+        <h1 className="text-2xl font-bold text-white mb-1">Autoproger</h1>
+        <p className="text-gray-500 text-sm mb-6">Sign in to your dashboard</p>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-400 text-sm">
+            {error}
           </div>
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1">Пароль</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 placeholder-zinc-500 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
-              placeholder="••••••••"
-              required
-            />
-          </div>
-          {error && <p className="text-sm text-red-400">{error}</p>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-amber-500 px-4 py-2 font-medium text-zinc-900 hover:bg-amber-400 disabled:opacity-50"
-          >
-            {loading ? 'Вход...' : 'Войти'}
-          </button>
-        </form>
-        <p className="mt-4 text-xs text-zinc-500">
-          Логин и пароль задаются в .env: ADMIN_USERNAME, ADMIN_PASSWORD
-        </p>
-      </div>
+        )}
+
+        <label className="block mb-4">
+          <span className="text-sm text-gray-400">Username</span>
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="mt-1 w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </label>
+
+        <label className="block mb-6">
+          <span className="text-sm text-gray-400">Password</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="mt-1 w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </label>
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
+        >
+          {loading ? "Signing in..." : "Sign in"}
+        </button>
+      </form>
     </div>
-  )
+  );
 }
