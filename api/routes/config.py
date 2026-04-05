@@ -13,27 +13,32 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=SettingsResponse)
-async def read_config():
-    s = get_settings()
+def _settings_to_response(s) -> SettingsResponse:
     return SettingsResponse(
         llm_default_provider=s.llm_default_provider,
         llm_default_model=s.llm_default_model,
         log_level=s.log_level,
+        claude_code_max_turns_planner=s.claude_code_max_turns_planner,
+        claude_code_max_turns_developer=s.claude_code_max_turns_developer,
+        claude_code_max_turns_reviewer=s.claude_code_max_turns_reviewer,
+        claude_code_max_turns_tester=s.claude_code_max_turns_tester,
+        claude_code_budget_planner=s.claude_code_budget_planner,
+        claude_code_budget_developer=s.claude_code_budget_developer,
+        claude_code_budget_reviewer=s.claude_code_budget_reviewer,
+        claude_code_budget_tester=s.claude_code_budget_tester,
     )
+
+
+@router.get("", response_model=SettingsResponse)
+async def read_config():
+    return _settings_to_response(get_settings())
 
 
 @router.patch("", response_model=SettingsResponse)
 async def update_config(body: SettingsUpdate):
     s = get_settings()
-    if body.llm_default_provider is not None:
-        s.llm_default_provider = body.llm_default_provider
-    if body.llm_default_model is not None:
-        s.llm_default_model = body.llm_default_model
-    if body.log_level is not None:
-        s.log_level = body.log_level
-    return SettingsResponse(
-        llm_default_provider=s.llm_default_provider,
-        llm_default_model=s.llm_default_model,
-        log_level=s.log_level,
-    )
+    for field in body.model_fields_set:
+        val = getattr(body, field)
+        if val is not None:
+            setattr(s, field, val)
+    return _settings_to_response(s)

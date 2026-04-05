@@ -34,6 +34,7 @@ class RepoORM(Base):
     allowed_paths: Mapped[dict] = mapped_column(JSON, default=list)
     denied_paths: Mapped[dict] = mapped_column(JSON, default=list)
     default_branch: Mapped[str] = mapped_column(String(50), default="main")
+    gitlab_url: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

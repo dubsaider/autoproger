@@ -159,6 +159,7 @@ def _repo_orm_to_cfg(repo_orm) -> RepoConfig:
         branch_prefix=repo_orm.branch_prefix,
         default_branch=repo_orm.default_branch,
         max_file_changes=repo_orm.max_file_changes,
+        gitlab_url=getattr(repo_orm, "gitlab_url", None),
     )
 
 
@@ -167,10 +168,13 @@ def _build_platform_client(cfg: RepoConfig):
         return GitHubClient(token=cfg.token, repo_url=cfg.url)
     elif cfg.platform == Platform.GITLAB:
         from core.config import get_settings
+        # Use per-repo gitlab_url if set, fall back to global setting
+        gitlab_url = cfg.gitlab_url or get_settings().gitlab_url
+        log.info("GitLab API client: url=%s", gitlab_url)
         return GitLabClient(
             token=cfg.token,
             repo_url=cfg.url,
-            gitlab_url=get_settings().gitlab_url,
+            gitlab_url=gitlab_url,
         )
     raise ValueError(f"Unknown platform: {cfg.platform}")
 

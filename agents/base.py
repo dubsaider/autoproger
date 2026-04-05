@@ -94,6 +94,7 @@ class BaseAgent(ABC):
         cwd = kwargs["cwd"]
         allowed_tools = self._agentic_tools()
         max_turns = self._agentic_max_turns()
+        max_budget = self._agentic_max_budget()
         session_id = kwargs.get("session_id")
 
         result = await self._llm.execute(
@@ -103,14 +104,22 @@ class BaseAgent(ABC):
             allowed_tools=allowed_tools,
             max_turns=max_turns,
             session_id=session_id,
+            max_budget_usd=max_budget if max_budget else None,
         )
 
         elapsed = int((time.monotonic() - t0) * 1000)
         if result.is_error:
+            error_detail = result.content or "Claude Code execution failed"
+            # Include turn count and cost in error for diagnostics
+            if result.num_turns:
+                error_detail += f" (turns={result.num_turns})"
+            if result.cost_usd:
+                error_detail += f" (cost=${result.cost_usd:.4f})"
+            log.warning("%s agent error: %s", self.role, error_detail)
             return AgentResult(
                 role=self.role,
                 success=False,
-                error=result.content or "Claude Code execution failed",
+                error=error_detail,
                 tokens_used=result.input_tokens + result.output_tokens,
                 duration_ms=result.duration_ms or elapsed,
             )
@@ -133,6 +142,10 @@ class BaseAgent(ABC):
 
     def _agentic_max_turns(self) -> int:
         return 10
+
+    def _agentic_max_budget(self) -> float:
+        """Max USD budget for this agent invocation (0 = unlimited)."""
+        return 0
 
     def _parse_response(self, content: str) -> dict:
         """Parse LLM completion response. Override for structured parsing."""

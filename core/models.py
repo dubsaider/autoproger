@@ -67,6 +67,8 @@ class RepoConfig(BaseModel):
     allowed_paths: list[str] = Field(default_factory=lambda: ["**"])
     denied_paths: list[str] = Field(default_factory=list)
     default_branch: str = "main"
+    # GitLab-specific: override global GITLAB_URL per-repo
+    gitlab_url: str | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 
+from core.config import get_settings
 from core.models import AgentRole, LLMMessage
 from agents.base import BaseAgent
 
@@ -106,7 +107,12 @@ class DeveloperAgent(BaseAgent):
         return ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Bash"]
 
     def _agentic_max_turns(self) -> int:
-        return 15
+        s = get_settings()
+        t = s.claude_code_max_turns_developer
+        return t if t > 0 else s.claude_code_max_turns
+
+    def _agentic_max_budget(self) -> float:
+        return get_settings().claude_code_budget_developer
 
     def _parse_response(self, content: str) -> dict:
         return _extract_json(content)

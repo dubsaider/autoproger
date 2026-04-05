@@ -16,20 +16,7 @@ router = APIRouter(prefix="/api/repos", tags=["repos"], dependencies=[Depends(ge
 async def list_repos():
     async with async_session() as session:
         repos = await db.list_repos(session)
-    return [
-        RepoResponse(
-            id=r.id,
-            platform=r.platform,
-            url=r.url,
-            autonomy=r.autonomy,
-            watch_labels=r.watch_labels,
-            branch_prefix=r.branch_prefix,
-            default_branch=r.default_branch,
-            max_file_changes=r.max_file_changes,
-            created_at=r.created_at,
-        )
-        for r in repos
-    ]
+    return [_repo_response(r) for r in repos]
 
 
 @router.post("", response_model=RepoResponse, status_code=201)
@@ -45,7 +32,12 @@ async def create_repo(body: RepoCreate):
             branch_prefix=body.branch_prefix,
             default_branch=body.default_branch,
             max_file_changes=body.max_file_changes,
+            gitlab_url=body.gitlab_url,
         )
+    return _repo_response(r)
+
+
+def _repo_response(r) -> RepoResponse:
     return RepoResponse(
         id=r.id,
         platform=r.platform,
@@ -55,6 +47,7 @@ async def create_repo(body: RepoCreate):
         branch_prefix=r.branch_prefix,
         default_branch=r.default_branch,
         max_file_changes=r.max_file_changes,
+        gitlab_url=r.gitlab_url,
         created_at=r.created_at,
     )
 

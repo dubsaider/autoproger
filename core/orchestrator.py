@@ -35,7 +35,7 @@ from core.progress import emit as _emit
 
 log = logging.getLogger(__name__)
 
-MAX_REVIEW_ROUNDS = 2
+MAX_REVIEW_ROUNDS = 1
 
 
 class Orchestrator:
@@ -85,7 +85,13 @@ class Orchestrator:
         async with async_session() as session:
             checkpoint = await repo_db.get_checkpoint(session, task.id)
         if checkpoint:
-            _emit(rid, f"Resuming from checkpoint: stage={checkpoint.get('stage', '?')}", level="info")
+            # Validate checkpoint plan — if it's just a raw text blob, discard it
+            cp_plan = checkpoint.get("plan", {})
+            if cp_plan and set(cp_plan.keys()) <= {"raw", "num_turns", "cost_usd", "session_id"}:
+                log.warning("Checkpoint plan is malformed (raw only) — will re-run planner")
+                checkpoint = {}
+            else:
+                _emit(rid, f"Resuming from checkpoint: stage={checkpoint.get('stage', '?')}", level="info")
 
         # 1. Clone repo
         _emit(rid, f"Cloning repository {repo_cfg.url}...")
@@ -127,6 +133,16 @@ class Orchestrator:
 
             plan = plan_result.output
             _emit(rid, f"Plan ready: {plan.get('summary', 'N/A')}", agent="planner", level="success")
+            complexity = plan.get("estimated_complexity", "")
+            if complexity:
+                _emit(rid, f"Complexity: {complexity}", agent="planner", level="info")
+            for i, step in enumerate(plan.get("steps", [])[:8], 1):
+                files = ", ".join(step.get("files", [])[:3])
+                suffix = f" ({files})" if files else ""
+                _emit(rid, f"  Step {i}: {step.get('description', '')}{suffix}", agent="planner", level="info")
+            risks = plan.get("risks", [])
+            if risks:
+                _emit(rid, f"Risks: {'; '.join(risks[:3])}", agent="planner", level="warning")
             log.info("Plan: %s", plan.get("summary", "N/A"))
 
             # Save checkpoint after planning
@@ -144,7 +160,8 @@ class Orchestrator:
         # 4. Development
         if is_agentic:
             run = await self._develop_agentic(
-                provider, rm, plan, task, run, context, repo_cfg, branch_name
+                provider, rm, plan, task, run, context, repo_cfg, branch_name,
+                checkpoint=checkpoint,
             )
         else:
             run = await self._develop_completion(
@@ -197,40 +214,92 @@ class Orchestrator:
     async def _develop_agentic(
         self, provider, rm: RepoManager, plan: dict, task: Task,
         run: Run, context: str, repo_cfg: RepoConfig, branch_name: str,
+        checkpoint: dict | None = None,
     ) -> Run:
         """Developer edits files directly via Claude Code, reviewer checks the diff."""
         rid = run.id
 
-        _emit(rid, "Implementing changes in the repository...", agent="developer")
-        developer = DeveloperAgent(provider)
-        dev_result = await developer.run(plan=plan, cwd=rm.local_path)
-        run.agent_results.append(dev_result)
-        await self._save_run_progress(run)
-        if not dev_result.success:
-            _emit(rid, f"Developer failed: {dev_result.error}", agent="developer", level="error")
-            await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
-            await self._update_task(task.id, TaskStatus.FAILED)
-            return run
-        _emit(rid, "Developer finished implementing changes", agent="developer", level="success")
+        # If checkpoint has a saved diff, apply it directly — no need to re-run developer
+        saved_diff = (checkpoint or {}).get("diff", "")
+        if saved_diff:
+            _emit(rid, "Restoring changes from checkpoint (skipping developer)...", agent="developer", level="info")
+            try:
+                rm.apply_diff(saved_diff)
+                diff = rm.get_diff()
+                if diff.strip():
+                    _emit(rid, "Checkpoint diff applied ✓", agent="developer", level="success")
+                    diff_lines = diff.splitlines()
+                    added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
+                    removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
+                    _emit(rid, f"Diff: +{added} / -{removed} lines", agent="developer", level="info")
+                    dev_result = None  # skip developer agent
+                    dev_session_id = (checkpoint or {}).get("dev_session_id")
+                else:
+                    _emit(rid, "Checkpoint diff applied but no changes detected — re-running developer", agent="developer", level="warning")
+                    saved_diff = ""  # fall through to developer
+            except Exception as e:
+                log.warning("Failed to apply checkpoint diff: %s — re-running developer", e)
+                saved_diff = ""  # fall through to developer
 
-        # Save checkpoint after developer
-        async with async_session() as session:
-            await repo_db.save_checkpoint(session, task.id, {
-                "stage": "review",
-                "plan": plan,
-                "dev_session_id": dev_result.output.get("session_id"),
-            })
+        if not saved_diff:
+            _emit(rid, "Implementing changes in the repository...", agent="developer")
+            developer = DeveloperAgent(provider)
+            dev_result = await developer.run(plan=plan, cwd=rm.local_path)
+            run.agent_results.append(dev_result)
+            await self._save_run_progress(run)
+            if not dev_result.success:
+                error_msg = dev_result.error or ""
+                if "max_turns" in error_msg or "error_max_turns" in error_msg:
+                    diff_check = rm.get_diff()
+                    if diff_check.strip():
+                        _emit(rid, "Developer hit turn limit but made changes — proceeding with review", agent="developer", level="warning")
+                        dev_result = dev_result.model_copy(update={"success": True})
+                        run.agent_results[-1] = dev_result
+                    else:
+                        _emit(rid, f"Developer hit turn limit with no changes: {error_msg}", agent="developer", level="error")
+                        await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
+                        await self._update_task(task.id, TaskStatus.FAILED)
+                        return run
+                elif "limit" in error_msg.lower():
+                    _emit(rid, f"Developer stopped by rate/budget limit: {error_msg}", agent="developer", level="error")
+                    await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
+                    await self._update_task(task.id, TaskStatus.FAILED)
+                    return run
+                else:
+                    _emit(rid, f"Developer failed: {error_msg}", agent="developer", level="error")
+                    await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
+                    await self._update_task(task.id, TaskStatus.FAILED)
+                    return run
+            _emit(rid, "Developer finished implementing changes", agent="developer", level="success")
 
-        dev_session_id = dev_result.output.get("session_id")
+            dev_session_id = dev_result.output.get("session_id")
 
-        # Get diff of what Claude Code changed
-        diff = rm.get_diff()
-        if not diff.strip():
-            log.warning("Developer agent made no changes")
-            _emit(rid, "No changes detected after development", agent="developer", level="warning")
-            await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
-            await self._update_task(task.id, TaskStatus.FAILED)
-            return run
+            # Get diff of what Claude Code changed
+            diff = rm.get_diff()
+            if not diff.strip():
+                log.warning("Developer agent made no changes")
+                _emit(rid, "No changes detected after development", agent="developer", level="warning")
+                await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
+                await self._update_task(task.id, TaskStatus.FAILED)
+                return run
+
+            # Save checkpoint — include diff so restart skips re-running developer
+            async with async_session() as session:
+                await repo_db.save_checkpoint(session, task.id, {
+                    "stage": "review",
+                    "plan": plan,
+                    "dev_session_id": dev_session_id,
+                    "diff": diff,
+                })
+
+        # Emit diff statistics
+        diff_lines = diff.splitlines()
+        added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
+        removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
+        changed_files = rm.get_changed_files()
+        _emit(rid, f"Diff: {len(changed_files)} files changed, +{added} / -{removed} lines", agent="developer", level="info")
+        for f in changed_files[:10]:
+            _emit(rid, f"  ✎ {f}", agent="developer", level="info")
 
         # Review loop
         reviewer = ReviewerAgent(provider)
@@ -242,14 +311,22 @@ class Orchestrator:
             run.agent_results.append(review_result)
             await self._save_run_progress(run)
 
+            review_summary = review_result.output.get("summary", "")
+            if review_summary:
+                _emit(rid, f"Review summary: {review_summary}", agent="reviewer", level="info")
+
+            all_issues = review_result.output.get("issues", [])
+            for issue in all_issues[:10]:
+                sev = issue.get("severity", "?")
+                lvl = "error" if sev == "critical" else "warning" if sev == "warning" else "info"
+                file_info = f"[{issue.get('file', '?')}] " if issue.get("file") else ""
+                _emit(rid, f"  [{sev}] {file_info}{issue.get('description', '')}", agent="reviewer", level=lvl)
+
             if review_result.output.get("approved", False):
-                _emit(rid, "Code review approved", agent="reviewer", level="success")
+                _emit(rid, "Code review approved ✓", agent="reviewer", level="success")
                 break
 
-            critical = [
-                i for i in review_result.output.get("issues", [])
-                if i.get("severity") == "critical"
-            ]
+            critical = [i for i in all_issues if i.get("severity") == "critical"]
             if not critical:
                 _emit(rid, "No critical issues found, proceeding", agent="reviewer", level="success")
                 break
@@ -265,16 +342,30 @@ class Orchestrator:
             dev_session_id = dev_result.output.get("session_id", dev_session_id)
             diff = rm.get_diff()
 
-        # Tester
-        _emit(rid, "Writing and running tests...", agent="tester")
-        tester = TesterAgent(provider)
-        test_result = await tester.run(diff=diff, cwd=rm.local_path)
-        run.agent_results.append(test_result)
-        await self._save_run_progress(run)
-        if test_result.success:
-            _emit(rid, "Tests completed", agent="tester", level="success")
+        # Tester — pass both the live diff and the last-commit diff as fallback
+        # so tester always has context even after commit/restart
+        tester_diff = diff.strip() or rm.get_last_commit_diff()
+
+        # Skip tester if all changed files are config/yaml/docs only (nothing to unit-test)
+        if _is_config_only_diff(tester_diff):
+            _emit(rid, "Skipping tester: only config/YAML/Markdown files changed", agent="tester", level="info")
         else:
-            _emit(rid, f"Tests failed: {test_result.error}", agent="tester", level="warning")
+            _emit(rid, "Writing tests for the changes...", agent="tester")
+            tester = TesterAgent(provider)
+            test_result = await tester.run(diff=tester_diff, cwd=rm.local_path)
+            run.agent_results.append(test_result)
+            await self._save_run_progress(run)
+            if test_result.success:
+                test_summary = test_result.output.get("summary") or test_result.output.get("raw", "")
+                if test_summary:
+                    short = test_summary[:200]
+                    _emit(rid, f"Tests: {short}", agent="tester", level="success")
+                else:
+                    _emit(rid, "Tests written ✓", agent="tester", level="success")
+                for tf in test_result.output.get("test_files", [])[:5]:
+                    _emit(rid, f"  + {tf.get('path', '?')}", agent="tester", level="info")
+            else:
+                _emit(rid, f"Tester: {test_result.error}", agent="tester", level="warning")
 
         return run
 
@@ -413,3 +504,31 @@ def _slug(text: str, max_len: int = 30) -> str:
     slug = "".join(c if c.isalnum() else "-" for c in text.lower())
     slug = slug.strip("-")[:max_len].rstrip("-")
     return slug or "task"
+
+
+# Extensions where automated unit tests make no sense
+_CONFIG_EXTENSIONS = {
+    ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".env",
+    ".md", ".rst", ".txt", ".json",
+    ".gitignore", ".dockerignore", ".editorconfig",
+    "dockerfile", "docker-compose",
+}
+
+
+def _is_config_only_diff(diff: str) -> bool:
+    """Return True if every changed file in the diff is a config/docs file."""
+    import re
+    changed_files = re.findall(r"^diff --git a/\S+ b/(\S+)", diff, re.MULTILINE)
+    if not changed_files:
+        return False
+    for path in changed_files:
+        name = path.lower()
+        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+        base = name.rsplit("/", 1)[-1]
+        is_config = (
+            ext in _CONFIG_EXTENSIONS
+            or any(kw in base for kw in ("dockerfile", "docker-compose", ".env"))
+        )
+        if not is_config:
+            return False
+    return True

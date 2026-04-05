@@ -61,6 +61,7 @@ class LLMProvider(ABC):
         max_turns: int | None = None,
         timeout: int | None = None,
         session_id: str | None = None,
+        max_budget_usd: float | None = None,
     ) -> ClaudeCodeResult:
         """Agentic execution — only supported by ClaudeCodeProvider.
 

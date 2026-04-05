@@ -87,6 +87,25 @@ class RepoManager:
         """Return the diff of all uncommitted changes (staged + unstaged)."""
         return self.repo.git.diff("HEAD")
 
+    def apply_diff(self, diff: str) -> None:
+        """Apply a unified diff to the working tree (used for checkpoint resume)."""
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8") as f:
+            f.write(diff)
+            patch_path = f.name
+        try:
+            self.repo.git.apply(patch_path)
+        finally:
+            os.unlink(patch_path)
+
+    def get_last_commit_diff(self) -> str:
+        """Return the diff introduced by the last commit (HEAD vs HEAD~1)."""
+        try:
+            return self.repo.git.diff("HEAD~1", "HEAD")
+        except Exception:
+            # Repo may have only one commit
+            return self.repo.git.show("HEAD", "--patch")
+
     def get_changed_files(self) -> list[str]:
         """Return list of paths with uncommitted changes."""
         status = self.repo.git.status("--porcelain")

@@ -171,6 +171,7 @@ class ClaudeCodeProvider(LLMProvider):
         max_turns: int | None = None,
         timeout: int | None = None,
         session_id: str | None = None,
+        max_budget_usd: float | None = None,
     ) -> ClaudeCodeResult:
         """Run Claude Code in agentic mode on a directory.
 
@@ -185,6 +186,7 @@ class ClaudeCodeProvider(LLMProvider):
             max_turns=max_turns,
             timeout=timeout,
             session_id=session_id,
+            max_budget_usd=max_budget_usd,
         )
 
     async def execute_streaming(
@@ -307,6 +309,7 @@ class ClaudeCodeProvider(LLMProvider):
         session_id: str | None = None,
         output_format: str = "json",
         verbose: bool = False,
+        max_budget_usd: float | None = None,
     ) -> list[str]:
         args = [self._binary, "-p", "--output-format", output_format]
 
@@ -325,8 +328,10 @@ class ClaudeCodeProvider(LLMProvider):
         turns = max_turns or self._default_max_turns
         args.extend(["--max-turns", str(turns)])
 
-        if self._max_budget_usd:
-            args.extend(["--max-budget-usd", str(self._max_budget_usd)])
+        # per-call budget overrides the provider-level default
+        effective_budget = max_budget_usd if max_budget_usd is not None else self._max_budget_usd
+        if effective_budget:
+            args.extend(["--max-budget-usd", str(effective_budget)])
 
         if session_id:
             args.extend(["--resume", session_id])
@@ -343,12 +348,14 @@ class ClaudeCodeProvider(LLMProvider):
         max_turns: int | None = None,
         timeout: int | None = None,
         session_id: str | None = None,
+        max_budget_usd: float | None = None,
     ) -> ClaudeCodeResult:
         args = self._build_args(
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             max_turns=max_turns,
             session_id=session_id,
+            max_budget_usd=max_budget_usd,
         )
 
         log.info(
@@ -388,10 +395,13 @@ class ClaudeCodeProvider(LLMProvider):
         err = stderr.decode("utf-8", errors="replace").strip()
 
         if err:
-            log.debug("Claude Code stderr: %s", err[:1000])
+            if proc.returncode and proc.returncode != 0:
+                log.warning("Claude Code stderr: %s", err[:2000])
+            else:
+                log.debug("Claude Code stderr: %s", err[:1000])
 
         if proc.returncode and proc.returncode != 0:
-            log.warning("Claude Code exited with code %d", proc.returncode)
+            log.warning("Claude Code exited with code %d | stdout_len=%d", proc.returncode, len(raw))
 
         return self._parse_result(raw, proc.returncode or 0)
 
@@ -408,11 +418,23 @@ class ClaudeCodeProvider(LLMProvider):
             )
 
         usage = data.get("usage", {})
+        subtype = data.get("subtype", "")
+        is_error = data.get("is_error", returncode != 0)
+
+        # Include subtype in content so callers can inspect the stop reason
+        content = data.get("result", data.get("content", ""))
+        if is_error and not content and subtype:
+            content = subtype  # e.g. "error_max_turns", "error_during_execution"
+
+        if is_error:
+            log.warning("Claude Code is_error=True subtype=%s turns=%s cost=$%s",
+                        subtype, data.get("num_turns"), data.get("total_cost_usd"))
+
         return ClaudeCodeResult(
-            content=data.get("result", data.get("content", "")),
-            is_error=data.get("is_error", returncode != 0),
+            content=content,
+            is_error=is_error,
             session_id=data.get("session_id", ""),
-            cost_usd=data.get("cost_usd", 0.0),
+            cost_usd=data.get("total_cost_usd", data.get("cost_usd", 0.0)),
             duration_ms=data.get("duration_ms", 0),
             num_turns=data.get("num_turns", 0),
             input_tokens=usage.get("input_tokens", 0),

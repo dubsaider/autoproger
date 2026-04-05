@@ -15,8 +15,20 @@ class Settings(BaseSettings):
     claude_code_binary: str = "claude"
     claude_code_max_turns: int = 15
     claude_code_timeout: int = 600
-    claude_code_max_budget_usd: float = 0
+    claude_code_max_budget_usd: float = 0  # global fallback (0 = unlimited)
     claude_code_model: str = ""
+
+    # Per-agent turn limits (0 = use claude_code_max_turns)
+    claude_code_max_turns_planner: int = 12
+    claude_code_max_turns_developer: int = 10
+    claude_code_max_turns_reviewer: int = 6
+    claude_code_max_turns_tester: int = 15
+
+    # Per-agent cost budgets in USD (0 = unlimited)
+    claude_code_budget_planner: float = 0
+    claude_code_budget_developer: float = 0
+    claude_code_budget_reviewer: float = 0
+    claude_code_budget_tester: float = 0
 
     # API keys (optional — only needed for API-based providers)
     anthropic_api_key: str = ""

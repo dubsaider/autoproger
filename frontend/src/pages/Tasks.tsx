@@ -257,7 +257,7 @@ function TaskCard({ task, onApprove, onRefresh }: { task: any; onApprove: () => 
               <div className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wider">Pipeline log</div>
               <div
                 ref={logRef}
-                className="bg-gray-950 rounded-lg p-3 font-mono text-xs space-y-1 max-h-48 overflow-y-auto"
+                className="bg-gray-950 rounded-lg p-3 font-mono text-xs space-y-1 max-h-64 overflow-y-auto"
               >
                 {progress.length === 0 && isActive && (
                   <div className="flex items-center gap-2 text-gray-400">
@@ -303,7 +303,7 @@ function RunCard({ run }: { run: any }) {
         <StatusBadge status={run.status} />
         <span className="text-xs text-gray-500 font-mono">{run.id}</span>
         {run.branch_name && (
-          <span className="text-xs text-gray-500">branch: {run.branch_name}</span>
+          <span className="text-xs text-gray-500 font-mono">{run.branch_name}</span>
         )}
         {run.pr_url && (
           <a
@@ -318,22 +318,9 @@ function RunCard({ run }: { run: any }) {
       </div>
 
       {run.agent_results?.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-1">
           {run.agent_results.map((r: any, i: number) => (
-            <div key={i} className="bg-gray-800/60 rounded-lg px-4 py-2 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <AgentIcon role={r.role} />
-                <span className="text-sm font-medium text-white capitalize">{r.role}</span>
-                {r.error && <span className="text-xs text-red-400 ml-2">{r.error}</span>}
-              </div>
-              <div className="flex items-center gap-3 text-xs text-gray-500">
-                {r.duration_ms && <span>{(r.duration_ms / 1000).toFixed(1)}s</span>}
-                {r.tokens_used > 0 && <span>{r.tokens_used} tokens</span>}
-                <span className={r.success ? "text-green-400 font-medium" : "text-red-400 font-medium"}>
-                  {r.success ? "✓" : "✗"}
-                </span>
-              </div>
-            </div>
+            <AgentResultRow key={i} r={r} />
           ))}
         </div>
       )}
@@ -344,6 +331,226 @@ function RunCard({ run }: { run: any }) {
           Pipeline is running...
         </div>
       )}
+    </div>
+  );
+}
+
+function AgentResultRow({ r }: { r: any }) {
+  const [open, setOpen] = useState(false);
+  const output = r.output ?? {};
+  const hasArtifact = Object.keys(output).some(
+    (k) => !["session_id", "num_turns", "cost_usd", "raw"].includes(k)
+  ) || output.raw;
+
+  const inlineSummary = () => {
+    if (r.role === "planner" && output.summary)
+      return <span className="text-xs text-gray-400 truncate max-w-xs hidden sm:inline">{output.summary}</span>;
+    if (r.role === "reviewer" && output.approved !== undefined) {
+      const crits = (output.issues ?? []).filter((i: any) => i.severity === "critical").length;
+      return output.approved
+        ? <span className="text-xs text-green-400">Approved</span>
+        : <span className="text-xs text-red-400">{crits} critical issue{crits !== 1 ? "s" : ""}</span>;
+    }
+    if (r.role === "developer" && output.num_turns)
+      return <span className="text-xs text-gray-400">{output.num_turns} turns</span>;
+    return null;
+  };
+
+  return (
+    <div className="bg-gray-800/60 rounded-lg overflow-hidden">
+      <button
+        onClick={() => hasArtifact && setOpen(!open)}
+        className={`w-full px-4 py-2 flex items-center justify-between text-left ${hasArtifact ? "cursor-pointer hover:bg-gray-800" : "cursor-default"}`}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <AgentIcon role={r.role} />
+          <span className="text-sm font-medium text-white capitalize shrink-0">{r.role}</span>
+          {inlineSummary()}
+          {r.error && <span className="text-xs text-red-400 truncate">{r.error}</span>}
+        </div>
+        <div className="flex items-center gap-3 text-xs text-gray-500 shrink-0 ml-2">
+          {output.cost_usd > 0 && <span className="text-gray-600">${output.cost_usd.toFixed(3)}</span>}
+          {r.duration_ms > 0 && <span>{(r.duration_ms / 1000).toFixed(1)}s</span>}
+          {r.tokens_used > 0 && <span>{r.tokens_used.toLocaleString()} tok</span>}
+          <span className={r.success ? "text-green-400 font-medium" : "text-red-400 font-medium"}>
+            {r.success ? "✓" : "✗"}
+          </span>
+          {hasArtifact && (
+            <span className="text-gray-600 text-base leading-none">{open ? "▲" : "▼"}</span>
+          )}
+        </div>
+      </button>
+
+      {open && hasArtifact && (
+        <div className="border-t border-gray-700/40 px-4 pt-3 pb-4">
+          <ArtifactPanel role={r.role} output={output} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArtifactPanel({ role, output }: { role: string; output: any }) {
+  if (role === "planner") return <PlannerArtifact output={output} />;
+  if (role === "reviewer") return <ReviewerArtifact output={output} />;
+  if (role === "tester") return <TesterArtifact output={output} />;
+  if (role === "developer") return <DeveloperArtifact output={output} />;
+  return <pre className="text-xs text-gray-400 whitespace-pre-wrap">{JSON.stringify(output, null, 2)}</pre>;
+}
+
+function PlannerArtifact({ output }: { output: any }) {
+  const complexityColor: Record<string, string> = {
+    low: "bg-green-400/10 text-green-400",
+    medium: "bg-yellow-400/10 text-yellow-400",
+    high: "bg-red-400/10 text-red-400",
+  };
+  return (
+    <div className="space-y-3 text-sm">
+      {output.summary && (
+        <p className="text-gray-200">{output.summary}</p>
+      )}
+      <div className="flex items-center gap-3 flex-wrap">
+        {output.estimated_complexity && (
+          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${complexityColor[output.estimated_complexity] ?? "bg-gray-700 text-gray-300"}`}>
+            complexity: {output.estimated_complexity}
+          </span>
+        )}
+        {output.num_turns && (
+          <span className="text-xs text-gray-500">{output.num_turns} turns</span>
+        )}
+      </div>
+      {output.steps?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Steps</p>
+          <ol className="space-y-1">
+            {output.steps.map((s: any, i: number) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-gray-600 shrink-0 w-5 text-right">{i + 1}.</span>
+                <div>
+                  <span className="text-gray-200">{s.description}</span>
+                  {s.files?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-0.5">
+                      {s.files.map((f: string, j: number) => (
+                        <span key={j} className="text-xs font-mono text-indigo-300 bg-indigo-900/30 px-1.5 rounded">
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {output.dependencies?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Dependencies</p>
+          <div className="flex flex-wrap gap-1">
+            {output.dependencies.map((d: string, i: number) => (
+              <span key={i} className="text-xs font-mono bg-gray-700 text-gray-200 px-2 py-0.5 rounded">{d}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {output.risks?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Risks</p>
+          <ul className="space-y-0.5">
+            {output.risks.map((r: string, i: number) => (
+              <li key={i} className="text-xs text-yellow-300/80">⚠ {r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewerArtifact({ output }: { output: any }) {
+  const sevColor: Record<string, string> = {
+    critical: "bg-red-400/10 text-red-400 border-red-400/20",
+    warning: "bg-yellow-400/10 text-yellow-300 border-yellow-400/20",
+    suggestion: "bg-blue-400/10 text-blue-300 border-blue-400/20",
+  };
+  const issues: any[] = output.issues ?? [];
+  return (
+    <div className="space-y-3 text-sm">
+      {output.summary && (
+        <p className="text-gray-200">{output.summary}</p>
+      )}
+      {issues.length === 0 ? (
+        <p className="text-xs text-green-400">No issues found.</p>
+      ) : (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+            Issues ({issues.length})
+          </p>
+          <div className="space-y-2">
+            {issues.map((issue: any, i: number) => (
+              <div key={i} className={`rounded-lg border px-3 py-2 ${sevColor[issue.severity] ?? "bg-gray-700/30 text-gray-300 border-gray-600"}`}>
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-xs font-medium uppercase">{issue.severity}</span>
+                  {issue.file && (
+                    <span className="text-xs font-mono opacity-70">{issue.file}</span>
+                  )}
+                </div>
+                <p className="text-xs">{issue.description}</p>
+                {issue.fix_suggestion && (
+                  <p className="text-xs opacity-70 mt-1">→ {issue.fix_suggestion}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {output.num_turns && (
+        <p className="text-xs text-gray-600">{output.num_turns} turns</p>
+      )}
+    </div>
+  );
+}
+
+function TesterArtifact({ output }: { output: any }) {
+  const files: any[] = output.test_files ?? [];
+  return (
+    <div className="space-y-3 text-sm">
+      {output.summary && <p className="text-gray-200">{output.summary}</p>}
+      {output.raw && !output.summary && (
+        <pre className="text-xs text-gray-300 whitespace-pre-wrap bg-gray-900 rounded p-2 max-h-48 overflow-y-auto">
+          {output.raw}
+        </pre>
+      )}
+      {files.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Test files created</p>
+          <div className="space-y-1">
+            {files.map((f: any, i: number) => (
+              <span key={i} className="block text-xs font-mono text-indigo-300 bg-indigo-900/30 px-2 py-0.5 rounded">
+                + {f.path}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {output.num_turns && (
+        <p className="text-xs text-gray-600">{output.num_turns} turns</p>
+      )}
+    </div>
+  );
+}
+
+function DeveloperArtifact({ output }: { output: any }) {
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="flex flex-wrap gap-4 text-xs text-gray-400">
+        {output.num_turns && <span><span className="text-gray-600">turns</span> {output.num_turns}</span>}
+        {output.cost_usd > 0 && <span><span className="text-gray-600">cost</span> ${output.cost_usd.toFixed(4)}</span>}
+        {output.session_id && (
+          <span className="font-mono"><span className="text-gray-600">session</span> {output.session_id.slice(0, 12)}…</span>
+        )}
+      </div>
+      <p className="text-xs text-gray-500">File changes are visible in the git diff / PR.</p>
     </div>
   );
 }

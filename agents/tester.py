@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 
+from core.config import get_settings
 from core.models import AgentRole, LLMMessage
 from agents.base import BaseAgent
 
@@ -37,7 +38,8 @@ Rules:
 
 AGENTIC_SYSTEM = """\
 You are a senior QA engineer. Write tests for recent code changes in this repository. \
-Use the project's existing test framework and conventions. Write meaningful tests.\
+Use the project's existing test framework and conventions. Write meaningful tests. \
+Do NOT attempt to run tests — only read the source code and write test files.\
 """
 
 AGENTIC_PROMPT_TEMPLATE = """\
@@ -53,13 +55,16 @@ Write tests for the code changes in this repository.
 1. Read the changed files to understand what was modified
 2. Look at existing tests (if any) to understand the testing patterns used
 3. Create or update test files for the changed code
-4. If possible, run the tests to verify they pass (use Bash for that)
-5. Summarize what tests you wrote and what they cover
+4. Summarize what tests you wrote and what they cover
 
 Focus on:
 - Unit tests for new/modified functions
 - Edge cases
 - Error handling paths
+
+IMPORTANT: Do NOT run tests or any shell commands. Only read source files and write test files.
+If the diff only contains configuration/YAML/Markdown changes with no testable logic,
+briefly explain that and create a minimal smoke test if appropriate, then finish.
 """
 
 
@@ -101,10 +106,17 @@ class TesterAgent(BaseAgent):
         return AGENTIC_SYSTEM
 
     def _agentic_tools(self) -> list[str]:
-        return ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Bash"]
+        # No Bash — tester must not attempt to execute tests in the container.
+        # The autoproger environment does not have project-specific dependencies.
+        return ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS"]
 
     def _agentic_max_turns(self) -> int:
-        return 12
+        s = get_settings()
+        t = s.claude_code_max_turns_tester
+        return t if t > 0 else s.claude_code_max_turns
+
+    def _agentic_max_budget(self) -> float:
+        return get_settings().claude_code_budget_tester
 
     def _parse_response(self, content: str) -> dict:
         return _extract_json(content)

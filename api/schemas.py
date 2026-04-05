@@ -29,6 +29,7 @@ class RepoCreate(BaseModel):
     branch_prefix: str = "autoproger/"
     default_branch: str = "main"
     max_file_changes: int = 20
+    gitlab_url: str | None = None  # override global GITLAB_URL for this repo
 
 
 class RepoResponse(BaseModel):
@@ -40,6 +41,7 @@ class RepoResponse(BaseModel):
     branch_prefix: str
     default_branch: str
     max_file_changes: int
+    gitlab_url: str | None
     created_at: datetime
 
 
@@ -85,9 +87,27 @@ class SettingsResponse(BaseModel):
     llm_default_provider: str
     llm_default_model: str
     log_level: str
+    # Per-agent turn limits
+    claude_code_max_turns_planner: int
+    claude_code_max_turns_developer: int
+    claude_code_max_turns_reviewer: int
+    claude_code_max_turns_tester: int
+    # Per-agent budgets (USD, 0 = unlimited)
+    claude_code_budget_planner: float
+    claude_code_budget_developer: float
+    claude_code_budget_reviewer: float
+    claude_code_budget_tester: float
 
 
 class SettingsUpdate(BaseModel):
     llm_default_provider: str | None = None
     llm_default_model: str | None = None
     log_level: str | None = None
+    claude_code_max_turns_planner: int | None = None
+    claude_code_max_turns_developer: int | None = None
+    claude_code_max_turns_reviewer: int | None = None
+    claude_code_max_turns_tester: int | None = None
+    claude_code_budget_planner: float | None = None
+    claude_code_budget_developer: float | None = None
+    claude_code_budget_reviewer: float | None = None
+    claude_code_budget_tester: float | None = None
