@@ -118,7 +118,7 @@ class ReviewerAgent(BaseAgent):
         return ["Read", "Glob", "Grep", "LS", "Bash"]
 
     def _agentic_max_turns(self) -> int:
-        return 6
+        return 15
 
     def _parse_response(self, content: str) -> dict:
         return _extract_json(content)

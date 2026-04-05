@@ -43,9 +43,9 @@ class RepoManager:
             url = f"{scheme}://x-access-token:{self._token}@{rest}"
         return url
 
-    def clone(self, *, branch: str = "main") -> Path:
+    def clone(self, *, branch: str = "main", task_id: str | None = None) -> Path:
         slug = self._repo_url.rstrip("/").split("/")[-1].replace(".git", "")
-        dest = self._workdir / slug
+        dest = self._workdir / (f"{slug}-{task_id}" if task_id else slug)
         if dest.exists():
             log.info("Reusing existing clone at %s", dest)
             self._repo = Repo(dest)
@@ -62,6 +62,10 @@ class RepoManager:
         return dest
 
     def create_branch(self, branch_name: str) -> None:
+        existing = [b.name for b in self.repo.branches]
+        if branch_name in existing:
+            log.info("Branch %s already exists, deleting and recreating", branch_name)
+            self.repo.git.branch("-D", branch_name)
         self.repo.git.checkout("-b", branch_name)
         log.info("Created and switched to branch %s", branch_name)
 

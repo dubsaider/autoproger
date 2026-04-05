@@ -1,25 +1,25 @@
-# --- Stage 1: Build frontend ---
-FROM node:20-alpine AS frontend
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --frozen-lockfile 2>/dev/null || npm install
-COPY frontend/ ./
-RUN npm run build
-
-# --- Stage 2: Python runtime ---
 FROM python:3.12-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git curl && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js and Claude Code CLI
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir .
 
 COPY . .
-COPY --from=frontend /app/frontend/dist ./frontend/dist
 
 RUN mkdir -p /app/data
 
-EXPOSE 8000
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
+EXPOSE 9000
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "main.py"]

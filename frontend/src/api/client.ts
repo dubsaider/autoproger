@@ -60,6 +60,14 @@ export const api = {
     return request<any[]>(`/tasks${qs}`);
   },
   getTask: (id: string) => request<any>(`/tasks/${id}`),
+  createTask: (data: { repo_id: string; issue_title: string; issue_body?: string }) =>
+    request<any>("/tasks/create", { method: "POST", body: JSON.stringify(data) }),
+  runTask: (taskId: string) =>
+    request<any>(`/tasks/${taskId}/run`, { method: "POST" }),
+  resetTask: (taskId: string) =>
+    request<any>(`/tasks/${taskId}/reset`, { method: "POST" }),
+  getRunProgress: (runId: string) =>
+    request<any[]>(`/runs/${runId}/progress`),
   approveTask: (taskId: string) =>
     request<any>("/tasks/approve", {
       method: "POST",

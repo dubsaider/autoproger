@@ -69,6 +69,17 @@ async def create_task(body: TaskCreateRequest):
     return _task_response(t)
 
 
+@router.post("/{task_id}/reset")
+async def reset_task(task_id: str):
+    """Reset a failed/cancelled task back to approved so it can be re-run."""
+    async with async_session() as session:
+        task_orm = await db.get_task(session, task_id)
+    if task_orm is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await task_manager.update_status(task_id, TaskStatus.APPROVED)
+    return {"status": "approved", "task_id": task_id}
+
+
 @router.post("/{task_id}/run")
 async def run_task(task_id: str, background_tasks: BackgroundTasks):
     """Trigger the orchestrator pipeline for a task.

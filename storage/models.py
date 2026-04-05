@@ -47,6 +47,7 @@ class TaskORM(Base):
     issue_body: Mapped[str] = mapped_column(Text, default="")
     issue_labels: Mapped[dict] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    checkpoint: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 

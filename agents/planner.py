@@ -101,7 +101,7 @@ class PlannerAgent(BaseAgent):
         return ["Read", "Glob", "Grep", "LS", "Bash"]
 
     def _agentic_max_turns(self) -> int:
-        return 8
+        return 20
 
     def _parse_response(self, content: str) -> dict:
         return _extract_json(content)

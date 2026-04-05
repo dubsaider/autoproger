@@ -31,6 +31,7 @@ from llm.router import LLMRouter
 from quality.runner import run_quality_gates
 from storage.database import async_session
 from storage import repositories as repo_db
+from core.progress import emit as _emit
 
 log = logging.getLogger(__name__)
 
@@ -78,14 +79,24 @@ class Orchestrator:
     ) -> Run:
         provider = self._llm.get(repo_cfg.llm_provider)
         is_agentic = provider.supports_agentic
+        rid = run.id
+
+        # Load checkpoint
+        async with async_session() as session:
+            checkpoint = await repo_db.get_checkpoint(session, task.id)
+        if checkpoint:
+            _emit(rid, f"Resuming from checkpoint: stage={checkpoint.get('stage', '?')}", level="info")
 
         # 1. Clone repo
+        _emit(rid, f"Cloning repository {repo_cfg.url}...")
         rm = RepoManager(repo_cfg.url, repo_cfg.token)
-        rm.clone(branch=repo_cfg.default_branch)
+        rm.clone(branch=repo_cfg.default_branch, task_id=task.id)
+        _emit(rid, "Repository ready", level="success")
 
         # For non-agentic providers, build context from the repo
         context = ""
         if not is_agentic:
+            _emit(rid, "Building context index...")
             idx = index_repo(rm.local_path)
             context = build_context_prompt(
                 rm.local_path, idx,
@@ -93,22 +104,34 @@ class Orchestrator:
                 issue_body=task.issue_body,
             )
 
-        # 2. Planning
-        planner = PlannerAgent(provider)
-        plan_result = await planner.run(
-            context=context,
-            issue_title=task.issue_title,
-            issue_body=task.issue_body,
-            cwd=rm.local_path if is_agentic else None,
-        )
-        run.agent_results.append(plan_result)
-        if not plan_result.success:
-            await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
-            await self._update_task(task.id, TaskStatus.FAILED)
-            return run
+        # 2. Planning — skip if checkpoint has plan
+        if checkpoint.get("stage") in ("developer", "review", "tester", "done") and checkpoint.get("plan"):
+            plan = checkpoint["plan"]
+            _emit(rid, f"Skipping planner (checkpoint): {plan.get('summary', 'N/A')}", agent="planner", level="success")
+        else:
+            _emit(rid, "Analyzing codebase and creating implementation plan...", agent="planner")
+            planner = PlannerAgent(provider)
+            plan_result = await planner.run(
+                context=context,
+                issue_title=task.issue_title,
+                issue_body=task.issue_body,
+                cwd=rm.local_path if is_agentic else None,
+            )
+            run.agent_results.append(plan_result)
+            await self._save_run_progress(run)
+            if not plan_result.success:
+                _emit(rid, f"Planner failed: {plan_result.error}", agent="planner", level="error")
+                await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
+                await self._update_task(task.id, TaskStatus.FAILED)
+                return run
 
-        plan = plan_result.output
-        log.info("Plan: %s", plan.get("summary", "N/A"))
+            plan = plan_result.output
+            _emit(rid, f"Plan ready: {plan.get('summary', 'N/A')}", agent="planner", level="success")
+            log.info("Plan: %s", plan.get("summary", "N/A"))
+
+            # Save checkpoint after planning
+            async with async_session() as session:
+                await repo_db.save_checkpoint(session, task.id, {"stage": "developer", "plan": plan})
 
         if self._on_plan_ready:
             await self._on_plan_ready(task, plan)
@@ -116,6 +139,7 @@ class Orchestrator:
         # 3. Create working branch
         branch_name = f"{repo_cfg.branch_prefix}{task.issue_number}-{_slug(task.issue_title)}"
         rm.create_branch(branch_name)
+        _emit(rid, f"Created branch: {branch_name}")
 
         # 4. Development
         if is_agentic:
@@ -131,12 +155,16 @@ class Orchestrator:
             return run
 
         # 5. Quality gates
+        _emit(rid, "Running quality gates...")
         quality = await run_quality_gates(rm.local_path)
+        _emit(rid, f"Quality gates: {quality.summary}")
 
         # 6. Commit, push, PR
         commit_msg = plan.get("commit_message") or f"feat: resolve #{task.issue_number}"
+        _emit(rid, f"Committing: {commit_msg}")
         rm.commit(commit_msg)
         rm.push(branch_name)
+        _emit(rid, "Pushed to remote", level="success")
 
         pr_body = self._build_pr_body(task, plan, quality, run)
         pr = await platform_client.create_pull_request(
@@ -146,10 +174,15 @@ class Orchestrator:
             base=repo_cfg.default_branch,
         )
 
+        _emit(rid, "Creating Pull Request...")
         run.pr_url = pr.url
         run.branch_name = branch_name
         await self._finish_run(run, TaskStatus.COMPLETED, run.agent_results, pr.url, branch_name)
         await self._update_task(task.id, TaskStatus.COMPLETED)
+        # Clear checkpoint on success
+        async with async_session() as session:
+            await repo_db.clear_checkpoint(session, task.id)
+        _emit(rid, f"PR created: {pr.url}", level="success")
 
         if self._on_pr_created:
             await self._on_pr_created(task, pr)
@@ -166,14 +199,27 @@ class Orchestrator:
         run: Run, context: str, repo_cfg: RepoConfig, branch_name: str,
     ) -> Run:
         """Developer edits files directly via Claude Code, reviewer checks the diff."""
+        rid = run.id
 
+        _emit(rid, "Implementing changes in the repository...", agent="developer")
         developer = DeveloperAgent(provider)
         dev_result = await developer.run(plan=plan, cwd=rm.local_path)
         run.agent_results.append(dev_result)
+        await self._save_run_progress(run)
         if not dev_result.success:
+            _emit(rid, f"Developer failed: {dev_result.error}", agent="developer", level="error")
             await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
             await self._update_task(task.id, TaskStatus.FAILED)
             return run
+        _emit(rid, "Developer finished implementing changes", agent="developer", level="success")
+
+        # Save checkpoint after developer
+        async with async_session() as session:
+            await repo_db.save_checkpoint(session, task.id, {
+                "stage": "review",
+                "plan": plan,
+                "dev_session_id": dev_result.output.get("session_id"),
+            })
 
         dev_session_id = dev_result.output.get("session_id")
 
@@ -181,6 +227,7 @@ class Orchestrator:
         diff = rm.get_diff()
         if not diff.strip():
             log.warning("Developer agent made no changes")
+            _emit(rid, "No changes detected after development", agent="developer", level="warning")
             await self._finish_run(run, TaskStatus.FAILED, run.agent_results)
             await self._update_task(task.id, TaskStatus.FAILED)
             return run
@@ -188,12 +235,15 @@ class Orchestrator:
         # Review loop
         reviewer = ReviewerAgent(provider)
         for round_num in range(MAX_REVIEW_ROUNDS):
+            _emit(rid, f"Reviewing changes (round {round_num + 1})...", agent="reviewer")
             review_result = await reviewer.run(
                 plan=plan, diff=diff, cwd=rm.local_path
             )
             run.agent_results.append(review_result)
+            await self._save_run_progress(run)
 
             if review_result.output.get("approved", False):
+                _emit(rid, "Code review approved", agent="reviewer", level="success")
                 break
 
             critical = [
@@ -201,22 +251,30 @@ class Orchestrator:
                 if i.get("severity") == "critical"
             ]
             if not critical:
+                _emit(rid, "No critical issues found, proceeding", agent="reviewer", level="success")
                 break
 
-            # Re-run developer with review feedback, resuming its session
+            _emit(rid, f"Found {len(critical)} critical issues, requesting fixes...", agent="reviewer", level="warning")
             dev_result = await developer.run(
                 plan={**plan, "review_feedback": review_result.output.get("issues", [])},
                 cwd=rm.local_path,
                 session_id=dev_session_id,
             )
             run.agent_results.append(dev_result)
+            await self._save_run_progress(run)
             dev_session_id = dev_result.output.get("session_id", dev_session_id)
             diff = rm.get_diff()
 
         # Tester
+        _emit(rid, "Writing and running tests...", agent="tester")
         tester = TesterAgent(provider)
         test_result = await tester.run(diff=diff, cwd=rm.local_path)
         run.agent_results.append(test_result)
+        await self._save_run_progress(run)
+        if test_result.success:
+            _emit(rid, "Tests completed", agent="tester", level="success")
+        else:
+            _emit(rid, f"Tests failed: {test_result.error}", agent="tester", level="warning")
 
         return run
 
@@ -316,6 +374,15 @@ class Orchestrator:
         lines.append("---")
         lines.append("*Generated by Autoproger v2 (Claude Code)*")
         return "\n".join(lines)
+
+    @staticmethod
+    async def _save_run_progress(run: Run) -> None:
+        """Persist intermediate agent results to DB so frontend can poll them."""
+        async with async_session() as session:
+            await repo_db.update_run_results(
+                session, run.id,
+                agent_results=[r.model_dump() for r in run.agent_results],
+            )
 
     @staticmethod
     async def _update_task(task_id: str, status: TaskStatus) -> None:

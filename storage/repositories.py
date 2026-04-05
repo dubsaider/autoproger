@@ -81,6 +81,29 @@ async def update_task_status(session: AsyncSession, task_id: str, status: str) -
     await session.commit()
 
 
+async def save_checkpoint(session: AsyncSession, task_id: str, checkpoint: dict) -> None:
+    await session.execute(
+        update(TaskORM)
+        .where(TaskORM.id == task_id)
+        .values(checkpoint=checkpoint, updated_at=datetime.now(timezone.utc))
+    )
+    await session.commit()
+
+
+async def get_checkpoint(session: AsyncSession, task_id: str) -> dict:
+    task = await session.get(TaskORM, task_id)
+    return task.checkpoint if task and task.checkpoint else {}
+
+
+async def clear_checkpoint(session: AsyncSession, task_id: str) -> None:
+    await session.execute(
+        update(TaskORM)
+        .where(TaskORM.id == task_id)
+        .values(checkpoint={}, updated_at=datetime.now(timezone.utc))
+    )
+    await session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
@@ -103,6 +126,18 @@ async def list_runs(session: AsyncSession, task_id: str | None = None) -> Sequen
         q = q.where(RunORM.task_id == task_id)
     result = await session.execute(q)
     return result.scalars().all()
+
+
+async def update_run_results(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    agent_results: list,
+) -> None:
+    await session.execute(
+        update(RunORM).where(RunORM.id == run_id).values(agent_results=agent_results)
+    )
+    await session.commit()
 
 
 async def finish_run(

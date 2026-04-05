@@ -308,7 +308,7 @@ class ClaudeCodeProvider(LLMProvider):
         output_format: str = "json",
         verbose: bool = False,
     ) -> list[str]:
-        args = [self._binary, "--bare", "-p", "--output-format", output_format]
+        args = [self._binary, "-p", "--output-format", output_format]
 
         if verbose:
             args.append("--verbose")

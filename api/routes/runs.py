@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import get_current_user
+from core.progress import get_events
 from api.schemas import RunResponse
 from storage.database import async_session
 from storage import repositories as db
@@ -29,6 +30,12 @@ async def list_runs(task_id: str | None = None):
         )
         for r in runs
     ]
+
+
+@router.get("/{run_id}/progress")
+async def run_progress(run_id: str):
+    """Return live progress events for an in-flight run."""
+    return get_events(run_id)
 
 
 @router.get("/{run_id}", response_model=RunResponse)

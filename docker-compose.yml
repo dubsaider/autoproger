@@ -1,12 +1,19 @@
 services:
-  autoproger:
+  backend:
     build: .
-    ports:
-      - "8000:8000"
     env_file:
       - .env
     volumes:
       - autoproger_data:/app/data
+      - claude_auth:/root/.claude
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "9000:80"
+    depends_on:
+      - backend
     restart: unless-stopped
 
   postgres:
@@ -24,3 +31,4 @@ services:
 volumes:
   autoproger_data:
   pg_data:
+  claude_auth:
